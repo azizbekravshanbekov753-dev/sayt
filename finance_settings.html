@@ -237,9 +237,49 @@
           </div>
         </div>
       </div>
-      <div class="settings-section" style="border-color:rgba(239,68,68,.2)">
-        <div class="ss-title" style="color:var(--red)">⚠️ Xavfli zona</div>
+      <!-- Sinxronlash -->
+      <div class="settings-section">
+        <div class="ss-title">🔄 Qurilmalar o'rtasida sinxronlash</div>
         <div class="ss-row">
+          <span class="ss-ico">📤</span>
+          <div class="ss-info">
+            <div class="ss-lbl">Kod yaratish</div>
+            <div class="ss-desc">Boshqa qurilmaga ma'lumot o'tkazish uchun 6 xonali kod oling</div>
+          </div>
+          <div class="ss-right">
+            <button class="btn btn-primary btn-sm" onclick="generateSyncCode()">Kod olish</button>
+          </div>
+        </div>
+        <div id="sync-code-box" style="display:none;padding:16px 20px;background:var(--bg3);border-top:1px solid var(--border)">
+          <div style="font-size:12px;color:var(--t2);margin-bottom:10px">📱 Boshqa qurilmada Sozlamalar → Kod kiritish ga yozing:</div>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <div id="sync-code-display" style="font-size:38px;font-weight:900;letter-spacing:10px;color:var(--purple);font-family:monospace;background:var(--bg2);padding:16px 24px;border-radius:12px;border:2px solid rgba(124,106,255,.35)"></div>
+            <div>
+              <div id="sync-code-timer" style="font-size:12px;color:var(--amber);margin-bottom:8px;font-weight:600"></div>
+              <button class="btn btn-ghost btn-sm" onclick="copySyncCode()">📋 Kodni nusxa olish</button>
+            </div>
+          </div>
+          <div style="font-size:11px;color:var(--t3);margin-top:10px">⏱ Kod 1 soat amal qiladi</div>
+        </div>
+        <div class="ss-row">
+          <span class="ss-ico">📥</span>
+          <div class="ss-info">
+            <div class="ss-lbl">Kod kiritish</div>
+            <div class="ss-desc">Boshqa qurilmadan olgan 6 xonali kodni kiriting</div>
+          </div>
+        </div>
+        <div style="padding:0 20px 16px;display:flex;gap:8px">
+          <input type="text" id="sync-code-input" class="finp"
+            placeholder="A7K3M9"
+            maxlength="6"
+            style="flex:1;text-align:center;font-size:22px;font-weight:800;letter-spacing:8px;text-transform:uppercase"
+            oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')"/>
+          <button class="btn btn-success" onclick="importSyncCode()">✅ Ulash</button>
+        </div>
+      </div>
+
+      <div class="settings-section" style="border-color:rgba(239,68,68,.2)">
+        <div class="ss-title" style="color:var(--red)">⚠️ Xavfli zona</div>        <div class="ss-row">
           <span class="ss-ico">🗑</span>
           <div class="ss-info">
             <div class="ss-lbl">Barcha ma'lumotlarni o'chirish</div>
@@ -478,13 +518,82 @@
 
   function clearAllData(){
     if(!confirm("BARCHA ma'lumotlarni o'chirishni istaysizmi? Bu amalni ortga qaytarib bo'lmaydi!"))return;
-    if(!confirm("Haqiqatan ham? Xarajatlar, qarzlar, maqsadlar, hamyonlar, bildirishnomalar, byudjetlar — hammasi o'chadi!"))return;
-    ['expenses','debts','notifs','budgets','recurring','splits','goals','wallets','transfers'].forEach(k=>DB.set(k,[]));
-    Toast.show('Barcha ma\'lumotlar to\'liq tozalandi ✅','info');
-    setTimeout(()=>window.location.href='finance_dashboard.html',1500);
+    if(!confirm("Haqiqatan ham? Xarajatlar, qarzlar, maqsadlar, hamyonlar, bildirishnomalar — hammasi o'chadi!"))return;
+    
+    const u = Auth.current();
+    if (u) {
+      // Faqat shu foydalanuvchining ma'lumotlarini o'chirish
+      const prefix = u.id + '_';
+      Object.keys(localStorage).forEach(key => {
+        if (key.startsWith(prefix)) localStorage.removeItem(key);
+      });
+      // Qurilma va onboarding sozlamalarini ham o'chirish
+      localStorage.removeItem('fin_device_' + u.id);
+      localStorage.removeItem('fin_ob_' + u.id);
+    }
+    
+    Toast.show("Barcha ma'lumotlar tozalandi ✅", 'ok');
+    setTimeout(() => window.location.href = 'finance_dashboard.html', 1200);
   }
 
   document.getElementById('report-modal').addEventListener('click',e=>{if(e.target===document.getElementById('report-modal'))document.getElementById('report-modal').classList.remove('show');});
+
+  // ── SINXRONLASH FUNKSIYALARI ──────────────────
+  let syncTimerInterval = null;
+
+  function generateSyncCode() {
+    const code = SyncManager.generateCode();
+    if (!code) { Toast.show('Avval kiring!','warn'); return; }
+
+    const box = document.getElementById('sync-code-box');
+    const display = document.getElementById('sync-code-display');
+    const timer = document.getElementById('sync-code-timer');
+
+    display.textContent = code;
+    box.style.display = 'block';
+
+    // Timer — 60 daqiqa hisob
+    let remaining = 3600;
+    if (syncTimerInterval) clearInterval(syncTimerInterval);
+    syncTimerInterval = setInterval(() => {
+      remaining--;
+      const m = Math.floor(remaining/60);
+      const s = remaining % 60;
+      timer.textContent = `⏱ ${m}:${s.toString().padStart(2,'0')} qoldi`;
+      if (remaining <= 0) {
+        clearInterval(syncTimerInterval);
+        box.style.display = 'none';
+        localStorage.removeItem('fin_sync_export');
+        Toast.show('Kod muddati tugadi. Yangi kod oling.','warn');
+      }
+    }, 1000);
+
+    Toast.show(`Kod tayyor: ${code}`,'ok',5000);
+  }
+
+  function copySyncCode() {
+    const code = document.getElementById('sync-code-display').textContent;
+    if (!code) return;
+    navigator.clipboard.writeText(code).then(()=>{
+      Toast.show('Kod nusxa olindi ✅','ok');
+    }).catch(()=>{
+      prompt('Kodni nusxa oling:', code);
+    });
+  }
+
+  function importSyncCode() {
+    const code = document.getElementById('sync-code-input').value.trim().toUpperCase();
+    if (code.length !== 6) { Toast.show('6 ta belgi kiriting!','warn'); return; }
+
+    const res = SyncManager.importByCode(code);
+    if (res.ok) {
+      Toast.show(`✅ Muvaffaqiyatli ulandi! Sahifa yangilanadi...`,'ok',3000);
+      document.getElementById('sync-code-input').value = '';
+      setTimeout(() => { window.location.href = 'finance_dashboard.html'; }, 1500);
+    } else {
+      Toast.show('❌ ' + res.msg,'err',5000);
+    }
+  }
 </script>
 </body>
 </html>

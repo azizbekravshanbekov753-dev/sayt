@@ -502,7 +502,8 @@ const App = {
     try { SW.register(); }            catch(e) {}
     try { Currency.fetchRates(); }    catch(e) {}
     try { Achievements.check(); }     catch(e) {}
-    try { TelegramSync.startPolling(); } catch(e) {}
+    // TelegramSync faqat Railway serverda ishlaydi
+    // try { TelegramSync.startPolling(); } catch(e) {}
     try { PrivacyMode.init(); }       catch(e) {}
     try { FinBot.renderFAB(); }       catch(e) {}
   },
@@ -2318,3 +2319,165 @@ Goals.deposit = function(id, amt, note) {
   return res;
 };
 
+
+
+/* ════════════════════════════════════════════
+   SYNC — Akkount sinxronlash (Export/Import kod)
+   ════════════════════════════════════════════ */
+const SyncManager = {
+
+  // Barcha ma'lumotlarni JSON ga to'plash
+  exportData() {
+    const u = Auth.current();
+    if (!u) return null;
+    const prefix = u.id + '_';
+    const data = {
+      v: 1,
+      user: {
+        id: u.id,
+        username: u.username,
+        displayName: u.displayName,
+        passwordHash: Auth.getUsers().find(x => x.username === u.username)?.passwordHash || '',
+        password: Auth.getUsers().find(x => x.username === u.username)?.password || '',
+      },
+      data: {}
+    };
+    // Barcha kalitlarni yig'ish
+    const keys = ['expenses','debts','notifs','budgets','recurring','splits',
+                  'goals','wallets','transfers','wallet_history'];
+    keys.forEach(k => {
+      data.data[k] = DB.get(k);
+    });
+    return data;
+  },
+
+  // 6 xonali kod yaratish
+  generateCode() {
+    const u = Auth.current();
+    if (!u) return null;
+    const exported = this.exportData();
+    if (!exported) return null;
+
+    // Ma'lumotni compress qilib kodga aylantirish
+    const json = JSON.stringify(exported);
+    const b64  = btoa(unescape(encodeURIComponent(json)));
+
+    // 6 xonali kalit (kod olish uchun)
+    const key = this._genKey();
+
+    // localStorage ga vaqtinchalik saqlash (1 soat)
+    const entry = {
+      key,
+      data: b64,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 3600000, // 1 soat
+    };
+    localStorage.setItem('fin_sync_export', JSON.stringify(entry));
+
+    return key;
+  },
+
+  // Kod bilan import qilish
+  importByCode(code) {
+    code = code.trim().toUpperCase();
+
+    // O'z qurilmasida saqlangan ma'lumotni tekshirish
+    const stored = localStorage.getItem('fin_sync_export');
+    if (stored) {
+      try {
+        const entry = JSON.parse(stored);
+        if (entry.key === code) {
+          if (Date.now() > entry.expiresAt) {
+            localStorage.removeItem('fin_sync_export');
+            return { ok: false, msg: 'Kod muddati tugagan. Yangi kod oling.' };
+          }
+          return this._applyData(entry.data);
+        }
+      } catch(e) {}
+    }
+
+    // Boshqa qurilmadan kelgan kod — foydalanuvchi paste qilgan bo'lishi mumkin
+    // Bu holda to'liq data URL orqali almashiladi
+    return { ok: false, msg: "Kod topilmadi. Kodni to'g'ri qurilmada oling va shu sahifada kiriting." };
+  },
+
+  // To'liq data string bilan import (QR yoki nusxa)
+  importFromString(str) {
+    try {
+      str = str.trim();
+      const json = decodeURIComponent(escape(atob(str)));
+      return this._applyData(str);
+    } catch(e) {
+      return { ok: false, msg: "Noto'g'ri ma'lumot formati." };
+    }
+  },
+
+  _applyData(b64) {
+    try {
+      const json = decodeURIComponent(escape(atob(b64)));
+      const imported = JSON.parse(json);
+
+      if (!imported.v || !imported.user || !imported.data) {
+        return { ok: false, msg: "Ma'lumot formati noto'g'ri." };
+      }
+
+      // Foydalanuvchini lokal akkountga qo'shish
+      const users = Auth.getUsers();
+      const uname = imported.user.username.toLowerCase();
+      if (!users.find(u => u.username === uname)) {
+        users.push({
+          id:           imported.user.id,
+          username:     uname,
+          displayName:  imported.user.displayName,
+          password:     imported.user.password || '',
+          passwordHash: imported.user.passwordHash || '',
+          createdAt:    new Date().toISOString(),
+        });
+        Auth.saveUsers(users);
+      }
+
+      // Sessiyani o'rnatish
+      Auth.setSession(imported.user);
+
+      // Ma'lumotlarni import qilish
+      const prefix = imported.user.id + '_';
+      Object.entries(imported.data).forEach(([key, val]) => {
+        if (Array.isArray(val)) {
+          // Mavjud ma'lumotlar bilan birlashtirish
+          const existing = JSON.parse(localStorage.getItem(prefix + key) || '[]');
+          const existIds = new Set(existing.map(x => x.id));
+          const merged = [...existing];
+          val.forEach(item => {
+            if (item.id && !existIds.has(item.id)) {
+              merged.push(item);
+            }
+          });
+          // Sana bo'yicha saralash
+          merged.sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+          localStorage.setItem(prefix + key, JSON.stringify(merged));
+        }
+      });
+
+      return { ok: true, user: imported.user };
+    } catch(e) {
+      return { ok: false, msg: 'Import xatosi: ' + e.message };
+    }
+  },
+
+  // Tasodifiy 6 xonali harf+raqam kod
+  _genKey() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let key = '';
+    for (let i = 0; i < 6; i++) {
+      key += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return key;
+  },
+
+  // Eksport ma'lumotini to'liq string sifatida olish (nusxa uchun)
+  getExportString() {
+    const exported = this.exportData();
+    if (!exported) return null;
+    return btoa(unescape(encodeURIComponent(JSON.stringify(exported))));
+  }
+};
